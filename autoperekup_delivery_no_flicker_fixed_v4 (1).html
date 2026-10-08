@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Автоперекуп — компактный горизонтальный гараж</title>
+<style>
+html,body{margin:0;width:100%;height:100%;background:#05070d;color:#e8fbff;font-family:system-ui,sans-serif}
+#boot{height:100%;display:grid;place-items:center;text-align:center;background:radial-gradient(circle at 50% 30%,#102436,#03060c)}
+#boot .box{padding:26px 30px;border:1px solid #1f5166;border-radius:16px;background:#07111a;box-shadow:0 0 30px rgba(39,232,255,.12)}
+#boot b{display:block;margin-bottom:8px}#boot small{color:#7290a5}
+</style>
+</head>
+<body>
+<div id="boot"><div class="box"><b>АВТОПЕРЕКУП // DELIVERY FIX</b><small id="status">Загрузка исправленной версии…</small></div></div>
+<script>
+(async function(){
+  'use strict';
+  const status=document.getElementById('status');
+  const WRAPPER_URL='https://raw.githubusercontent.com/benbenben2171-dotcom/1/main/autodealer_delivery_no_flicker_v5.html';
+  const SOURCE_URL='https://raw.githubusercontent.com/benbenben2171-dotcom/777/main/index.html';
+
+  function patchWrapper(wrapper){
+    const serviceNeedle = "function service(i,type){";
+    if(wrapper.indexOf(serviceNeedle) < 0) throw new Error('Не найдена функция service() модуля ТО.');
+
+    const old = "function service(i,type){\n    if(!stateOk())return;const g=state.garage[i],c=safeCarDef(g);if(!g||!c)return;const x=ensureCar(g,c,i);\n    const options={diagnostic:{title:'Диагностика',cost:Math.round(1800+num(c.repair)*.04),gain:5,days:15},maintenance:{title:'Плановое ТО',cost:Math.round(4500+num(c.repair)*.12),gain:12,days:30},deep:{title:'Глубокое обслуживание',cost:Math.round(9000+num(c.repair)*.24),gain:22,days:45}};\n    const o=options[type]||options.maintenance;";
+    const guard = "function service(i,type){\n    if(!stateOk())return;const g=state.garage[i],c=safeCarDef(g);if(!g||!c)return;const x=ensureCar(g,c,i);\n    const options={diagnostic:{title:'Диагностика',cost:Math.round(1800+num(c.repair)*.04),gain:5,days:15},maintenance:{title:'Плановое ТО',cost:Math.round(4500+num(c.repair)*.12),gain:12,days:30},deep:{title:'Глубокое обслуживание',cost:Math.round(9000+num(c.repair)*.24),gain:22,days:45}};\n    const o=options[type]||options.maintenance;\n    const hasPrevious=Number(x.lastServiceAt)>0;\n    const dueByTime=Number(x.nextServiceAt)>0 && now()>=Number(x.nextServiceAt);\n    const dueByKm=Number(g.mileage)>=Number(x.nextServiceKm||0);\n    if(hasPrevious && !dueByTime && !dueByKm){toastSafe(`${c.name}: повторное ТО пока не требуется`);return;}";
+    if(wrapper.includes(old)) wrapper=wrapper.replace(old,guard);
+
+    const oldBtn='<button type="button" class="btn" data-life-service="${i}" data-life-type="maintenance">🔧 ТО</button>';
+    const newBtn='${(()=>{const due=!x.lastServiceAt||now()>=Number(x.nextServiceAt||0)||num(g.mileage)>=num(x.nextServiceKm);return `<button type="button" class="btn" data-life-service="${i}" data-life-type="maintenance" ${due?"":"disabled"}>${due?"🔧 ТО":"✅ ТО выполнено"}</button>`})()}';
+    if(wrapper.includes(oldBtn)) wrapper=wrapper.replace(oldBtn,newBtn);
+
+    // Expose the garage inspector before any card can be clicked. The previous version
+    // assigned the global only after the inspector was already invoked, so the first
+    // card click did nothing.
+    const inspectorNeedle='function inspect(i){window.__PEREKUP_GARAGE_INSPECT=inspect;';
+    const inspectorFixed='window.__PEREKUP_GARAGE_INSPECT=inspect;function inspect(i){';
+    wrapper=wrapper.replace(inspectorNeedle,inspectorFixed);
+
+    const oldRender="saveSafe();try{if(typeof showTab==='function')showTab('garage')}catch(_){};";
+    const newRender="saveSafe();try{if(typeof refreshGarageOnly==='function')refreshGarageOnly();else if(typeof showTab==='function')showTab('garage')}catch(_){};";
+    if(wrapper.includes(oldRender)) wrapper=wrapper.replace(oldRender,newRender);
+    return wrapper;
+  }
+
+  function patchSource(source){
+    // 1) Delivery flicker: update only the timer, never repaint the whole garage every tick.
+    if(!source.includes('function updateDeliveryTimerUI(){')){
+      const helper=`function updateDeliveryTimerUI(){
+ const box=document.getElementById('garageCards');
+ const timer=box?.querySelector('.pendingCard .roadTimer');
+ const p=state.pendingDelivery;
+ if(timer&&p&&p.mode!=='breakdown')timer.textContent=remainingSec(p.endAt)+' сек.';
+}
+
+`;
+      if(!source.includes('function tickDelivery(){')) throw new Error('В исходнике не найдена tickDelivery().');
+      source=source.replace('function tickDelivery(){',helper+'function tickDelivery(){');
+      const oldBlock=" renderGarage();\n}\nfunction startDelivery(){";
+      const newBlock=" updateDeliveryTimerUI();\n}\nfunction startDelivery(){";
+      if(!source.includes(oldBlock)) throw new Error('Не найден участок tickDelivery() для точечного исправления.');
+      source=source.replace(oldBlock,newBlock);
+    }
+
+    // 2) Garage-only refresh: don't rebuild hidden market/listing DOM after garage actions.
+    if(!source.includes('function refreshGarageOnly(){')){
+      const garageRefresh=`function refreshGarageOnly(){
+ document.getElementById('money').textContent=fmt(state.money);
+ document.getElementById('rep').textContent=state.rep;
+ document.getElementById('count').textContent=state.garage.length;
+ document.getElementById('sales').textContent=state.sales;
+ document.getElementById('profit').textContent=fmt(state.profit);
+ document.getElementById('level').textContent=level();
+ renderBusinessPulse();
+ renderAIDirector();
+ renderShowroom();
+ const logBox=document.getElementById('log');
+ if(logBox)logBox.innerHTML=state.logs.length?state.logs.map(x=>\`<div class="event \${x.type}">\${x.text}</div>\`).join(''):'<div class="muted">Пока ничего не произошло.</div>';
+ renderGarage();
+ renderTuning();
+ renderMarketEvent();
+ save();
+}
+`;
+      const anchor='function repair(i){';
+      if(!source.includes(anchor)) throw new Error('Не найдена точка вставки refreshGarageOnly().');
+      source=source.replace(anchor,garageRefresh+'\n'+anchor);
+    }
+
+    // 3) Replace expensive full renders for garage actions.
+    const actions=[
+      /function issueRepair\(i\)\{([\s\S]*?)save\(\);render\(\);\n\}/,
+      /function maskIssue\(i\)\{([\s\S]*?)save\(\);render\(\);\n\}/,
+      /function repair\(i\)\{([\s\S]*?)save\(\);render\(\)\}/,
+      /function paint\(i\)\{([\s\S]*?)save\(\);render\(\)\}/,
+      /function wash\(i\)\{([\s\S]*?)save\(\);render\(\);/
+    ];
+    for(const re of actions){
+      source=source.replace(re,m=>m.replace('save();render();','refreshGarageOnly();'));
+    }
+
+    // 4) Selling state: once a car is listed, the garage button changes to a stable disabled label.
+    const sellButtonOld='\${g.showroomListed?\`<button type=\"button\" class=\"btn\" data-unshowroom=\"${slot}\">↩ Снять</button>\`:\'\'}<button type=\"button\" class=\"btn yellow\" data-sell=\"${slot}\">Продать</button>';
+    const sellButtonNew='\${g.showroomListed?\`<button type=\"button\" class=\"btn\" data-unshowroom=\"${slot}\">↩ Снять</button>\`:\'\'}'+
+      ' \${g.forSale?\`<button type=\"button\" class=\"btn yellow\" data-sell=\"${slot}\" disabled title=\"Автомобиль уже выставлен на продажу\">🏷️ На продаже</button>\`:\`<button type=\"button\" class=\"btn yellow\" data-sell=\"${slot}\">Продать</button>\`}';
+    if(source.includes(sellButtonOld)){
+      source=source.replace(sellButtonOld,sellButtonNew);
+    } else {
+      // Fallback for the raw source string: replace only the exact button fragment.
+      const rawOld='<button type=\"button\" class=\"btn yellow\" data-sell=\"${slot}\">Продать</button>';
+      const rawNew='\${g.forSale?\`<button type=\"button\" class=\"btn yellow\" data-sell=\"${slot}\" disabled title=\"Автомобиль уже выставлен на продажу\">🏷️ На продаже</button>\`:\`<button type=\"button\" class=\"btn yellow\" data-sell=\"${slot}\">Продать</button>\`}';
+      source=source.replace(rawOld,rawNew);
+    }
+
+    // 4) Selling from garage: also use targeted refresh rather than rebuilding all tabs.
+    source=source.replace("save();render();toast('Объявление опубликовано. Жди уведомления покупателя')","refreshGarageOnly();toast('Объявление опубликовано. Жди уведомления покупателя')");
+    source=source.replace("save();render();showTab('garage');toast('Объявление опубликовано. Жди уведомления покупателя')","refreshGarageOnly();toast('Объявление опубликовано. Жди уведомления покупателя')");
+
+    // 5) Robust runtime guard: handle garage sale/maintenance clicks before the original document handlers.
+    const runtimeFix=`<script>
+(function(){
+  'use strict';
+  if(window.__PEREKUP_GARAGE_ACTIONS_V4)return;
+  window.__PEREKUP_GARAGE_ACTIONS_V4=true;
+  const n=v=>Number.isFinite(Number(v))?Number(v):0;
+  const now=()=>Date.now();
+  const clamp2=(v,a,b)=>Math.max(a,Math.min(b,n(v)));
+  function garageRefresh(){
+    // Не пересоздаём гараж после действия: это вызывало заметный скачок всего интерфейса.
+    // Состояние уже записано в state; обновляем только локальные кнопки/индикаторы.
+    try{syncButtons()}catch(_){}
+    try{
+      const modal=document.getElementById('modal');
+      if(modal&&modal.classList.contains('show')&&typeof window.__PEREKUP_GARAGE_INSPECT==='function'){
+        const active=modal.querySelector('[data-sell],[data-issue-repair],[data-garage-inspect]');
+        const i=active?Number(active.dataset.sell ?? active.dataset.issueRepair ?? active.dataset.garageInspect):-1;
+        if(Number.isInteger(i)&&i>=0)setTimeout(()=>{try{window.__PEREKUP_GARAGE_INSPECT(i)}catch(_){}},0);
+      }
+    }catch(_){}
+  }
+  function syncButtons(){
+    try{
+      const gs=Array.isArray(state?.garage)?state.garage:[];
+      document.querySelectorAll('[data-sell]').forEach(btn=>{
+        const i=n(btn.dataset.sell),g=gs[i];if(!g)return;
+        const listed=!!g.forSale || (Array.isArray(state.saleListings)&&state.saleListings.some(x=>x&&String(x.carId)===String(g.id)&&x.active!==false&&x.channel==='market'));
+        const label=listed?'🏷️ На продаже':'Продать';
+        if(btn.disabled!==listed)btn.disabled=listed;
+        if(btn.textContent!==label)btn.textContent=label;
+        const title=listed?'Автомобиль уже выставлен на продажу':'';
+        if(btn.title!==title)btn.title=title;
+      });
+      document.querySelectorAll('[data-life-service]').forEach(btn=>{
+        const i=n(btn.dataset.lifeService),g=gs[i],x=g?.garageLife;
+        if(!g||!x)return;
+        const due=!n(x.lastServiceAt)||now()>=n(x.nextServiceAt)||n(g.mileage)>=n(x.nextServiceKm);
+        const disabled=!due;
+        const label=due?'🔧 ТО':'✅ ТО выполнено';
+        const title=due?'':'Плановое ТО ещё не требуется';
+        if(btn.disabled!==disabled)btn.disabled=disabled;
+        if(btn.textContent!==label)btn.textContent=label;
+        if(btn.title!==title)btn.title=title;
+      });
+    }catch(_){ }
+  }
+  function showToast(msg){try{if(typeof toastSafe==='function')toastSafe(msg);else if(typeof toast==='function')toast(msg)}catch(_){}}
+  function doSave(){try{if(typeof saveSafe==='function')saveSafe();else if(typeof save==='function')save()}catch(_){}}
+  function doLog(msg,type){try{if(typeof logSafe==='function')logSafe(msg,type);else if(typeof log==='function')log(msg,type)}catch(_){}}
+  function doSell(i){
+    const g=state.garage?.[i],c=typeof carDef==='function'?carDef(g):null;
+    if(!g||!c){showToast('Не удалось выставить эту машину');return}
+    const listed=!!g.forSale || (state.saleListings||[]).some(x=>x&&String(x.carId)===String(g.id)&&x.active!==false&&x.channel==='market');
+    if(listed){showToast('Машина уже выставлена. Ожидай предложения покупателя');syncButtons();return}
+    if(g.showroomListed||state.showroom?.listed?.includes(g.id)){showToast('Машина уже выставлена в автосалоне — жди предложения покупателей');return}
+    const ts=now();
+    g.forSale=true;g.saleChannel='market';g.clientOffers=[];
+    state.saleListings=Array.isArray(state.saleListings)?state.saleListings:[];
+    state.saleListings.push({id:'sl_'+ts+'_'+Math.random().toString(16).slice(2),carId:g.id,channel:'market',listedAt:ts,nextOfferAt:ts+16000+Math.floor(Math.random()*24000),generatedCount:0,offers:[],active:true});
+    doLog('📢 '+c.name+' выставлен на продажу. Машина останется у тебя до тех пор, пока ты не примешь предложение.','neutral');
+    doSave();garageRefresh();showToast('Объявление опубликовано. Жди уведомления покупателя');
+  }
+  function doService(i,type){
+    const g=state.garage?.[i],c=typeof carDef==='function'?carDef(g):null;if(!g||!c)return;
+    g.garageLife=g.garageLife&&typeof g.garageLife==='object'?g.garageLife:{};
+    const x=g.garageLife;
+    x.history=Array.isArray(x.history)?x.history:[];
+    const hasPrevious=n(x.lastServiceAt)>0;
+    const dueByTime=n(x.nextServiceAt)>0&&now()>=n(x.nextServiceAt);
+    const dueByKm=n(g.mileage)>=n(x.nextServiceKm);
+    if(hasPrevious&&!dueByTime&&!dueByKm){syncButtons();showToast(c.name+': повторное ТО пока не требуется');return}
+    const options={maintenance:{title:'Плановое ТО',cost:Math.round(4500+n(c.repair)*.12),gain:12,days:30},diagnostic:{title:'Диагностика',cost:Math.round(1800+n(c.repair)*.04),gain:5,days:15},deep:{title:'Глубокое обслуживание',cost:Math.round(9000+n(c.repair)*.24),gain:22,days:45}};
+    const o=options[type]||options.maintenance;
+    const canAfford=typeof afford==='function'?afford(o.cost):n(state.money)>=o.cost;
+    if(!canAfford){showToast('Не хватает денег на эту работу');return}
+    state.money-=o.cost;
+    g.extraSpent=n(g.extraSpent)+o.cost;
+    g.condition=clamp2(n(g.condition)+o.gain,0,100);
+    g.dirt=Math.max(0,n(g.dirt)-(type==='deep'?45:type==='maintenance'?25:8));
+    x.serviceScore=clamp2(n(x.serviceScore)+o.gain*.9,0,100);
+    x.lastServiceAt=now();x.lastServiceKm=n(g.mileage);
+    x.nextServiceKm=n(g.mileage)+(type==='deep'?22000:type==='maintenance'?15000:8000);
+    x.nextServiceAt=now()+o.days*86400000;x.priority='low';
+    x.history.push({at:now(),type:'service',title:o.title,text:'Выполнено в гараже. Индекс обслуживания +'+Math.round(o.gain*.9)+'.',cost:o.cost,km:n(g.mileage)});
+    x.history=x.history.slice(-30);
+    state.rep=n(state.rep)+1;
+    doLog('🔧 '+c.name+': '+o.title.toLowerCase()+' за '+(typeof money==='function'?money(o.cost):o.cost+' ₽')+'.','positive');
+    doSave();garageRefresh();showToast(c.name+': '+o.title+' завершено');
+  }
+  document.addEventListener('click',function(e){
+    const target=e.target?.closest?.('[data-sell],[data-life-service]');
+    if(!target)return;
+    // Capture-phase handler blocks the original bubbling handlers, preventing a second render/action.
+    e.preventDefault();e.stopImmediatePropagation();
+    if(target.dataset.sell!==undefined){doSell(n(target.dataset.sell));return}
+    if(target.dataset.lifeService!==undefined){doService(n(target.dataset.lifeService),target.dataset.lifeType||'maintenance');return}
+  },true);
+  const oldRender=window.renderGarage;
+  if(typeof oldRender==='function'&&!oldRender.__perekupWrapped){
+    const wrapped=function(){const r=oldRender.apply(this,arguments);setTimeout(syncButtons,0);return r};
+    wrapped.__perekupWrapped=true;window.renderGarage=wrapped;
+  }
+  const garageBox=document.getElementById('garageCards');
+  if(garageBox){
+    const obs=new MutationObserver(()=>setTimeout(syncButtons,20));
+    obs.observe(garageBox,{childList:true,subtree:true});
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(syncButtons,50),{once:true});
+  else setTimeout(syncButtons,50);
+})();
+<\/script>`;
+    source=source.includes('</body>')?source.replace('</body>',runtimeFix+'</body>'):source+runtimeFix;
+
+    // 4b) Hidden-problem repair: handle the inspector button before legacy handlers,
+    // persist the fix once, refresh the garage, and reopen the inspector with current state.
+    const issueRepairFix=`<script>
+(function(){
+  'use strict';
+  if(window.__PEREKUP_ISSUE_REPAIR_FIX_V2)return;
+  window.__PEREKUP_ISSUE_REPAIR_FIX_V2=true;
+  const n=v=>Number.isFinite(Number(v))?Number(v):0;
+  const clamp3=(v,a,b)=>Math.max(a,Math.min(b,n(v)));
+  function toast2(msg){try{if(typeof toast==='function')toast(msg)}catch(_){} }
+  function save2(){try{if(typeof save==='function')save()}catch(_){} }
+  function refresh2(){ /* intentionally disabled: issue repair refreshes only the inspector */ }
+  function closeInspect(){
+    try{const modal=document.getElementById('modal');if(modal)modal.classList.remove('show')}catch(_){ }
+  }
+  function reopenInspect(i){
+    setTimeout(()=>{
+      try{
+        if(typeof window.__PEREKUP_GARAGE_INSPECT==='function'){
+          window.__PEREKUP_GARAGE_INSPECT(i);
+          return;
+        }
+      }catch(_){ }
+    },30);
+  }
+  document.addEventListener('click',function(e){
+    const b=e.target?.closest?.('[data-issue-repair]');
+    if(!b)return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const i=n(b.dataset.issueRepair);
+    const g=Array.isArray(state?.garage)?state.garage[i]:null;
+    const c=g&&typeof carDef==='function'?carDef(g):null;
+    if(!g||!c){toast2('Автомобиль не найден');return}
+    if(!g.hiddenIssue||g.issueStatus==='repaired'){
+      toast2(c.name+': проблема уже устранена');
+      closeInspect();
+      reopenInspect(i);
+      return;
+    }
+    const baseCost=Math.max(0,n(g.issueRepairCost)||1200);
+    const cost=typeof repairCost==='function'?repairCost(baseCost):baseCost;
+    const can=typeof afford==='function'?afford(cost):n(state.money)>=cost;
+    if(!cost||!can){toast2('Не хватает денег на устранение проблемы');return}
+    state.money-=cost;
+    g.extraSpent=n(g.extraSpent)+cost;
+    g.issueStatus='repaired';
+    g.issueRepairedAt=Date.now();
+    g.maskOutcome=null;
+    g.maskSalePenalty=0;
+    g.issueMarketPenalty=0;
+    g.marketPenalty=Math.max(0,n(g.marketPenalty));
+    if(g.issueKind==='technical'){
+      g.condition=clamp3(n(g.condition)+Math.max(4,n(g.issueConditionLoss)),0,100);
+    }else{
+      g.condition=clamp3(n(g.condition)+n(g.issueConditionLoss),0,100);
+    }
+    state.rep=n(state.rep)+1;
+    try{if(typeof log==='function')log('✅ '+c.name+': скрытая проблема устранена за '+(typeof fmt==='function'?fmt(cost):cost+' ₽')+'.','positive')}catch(_){ }
+    save2();
+    // Оставляем окно осмотра открытым и обновляем только его содержимое.
+    // Полный render/refresh здесь запрещён: он дёргает весь интерфейс.
+    try{
+      if(typeof window.__PEREKUP_GARAGE_INSPECT==='function')window.__PEREKUP_GARAGE_INSPECT(i);
+    }catch(_){}
+    try{
+      if(typeof window.__PEREKUP_GARAGE_ACTIONS_V4!=='undefined'){}
+      document.querySelectorAll('[data-sell]').forEach(btn=>{
+        if(Number(btn.dataset.sell)===i){btn.disabled=!!g.forSale;btn.textContent=g.forSale?'🏷️ На продаже':'Продать'}
+      });
+    }catch(_){}
+    toast2(c.name+': проблема устранена');
+  },true);
+})();
+<\/script>`;
+    source=source.includes('</body>')?source.replace('</body>',issueRepairFix+'</body>'):source+issueRepairFix;
+
+    // 5) Make the garage inspector available in the actual game source.
+    if(source.includes('function inspect(i){window.__PEREKUP_GARAGE_INSPECT=inspect;')){
+      // already exported
+    }else if(source.includes('function inspect(i){')){
+      source=source.replace('function inspect(i){','window.__PEREKUP_GARAGE_INSPECT=inspect;function inspect(i){');
+    }
+
+    // 5) Keep the compact horizontal garage cards.
+    // Card expansion is intentionally disabled; garage cards are non-clickable containers.
+    if(!source.includes('id="compactGarageCards"')){
+      const compactGarageCSS=`<style id="compactGarageCards">
+/* Compact garage cards — same visual density as the tuning cards */
+.garageFloor{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:10px!important;align-items:start!important}
+.garageBay{min-height:0!important;height:auto!important;padding:0!important;border-radius:14px!important;overflow:hidden!important}
+.garageCar{display:flex!important;flex-direction:column!important;height:auto!important;justify-content:flex-start!important}
+.garageCarVisual{width:100%!important;height:132px!important;min-height:132px!important;border-radius:12px 12px 0 0!important}
+.garageCarHead{margin-top:0!important;padding:9px 10px 0!important;align-items:flex-start!important}
+.garageCarName{font-size:15px!important;line-height:1.2!important}
+.garageMeta{font-size:11px!important;line-height:1.35!important;margin-top:3px!important}
+.garageCar>.conditionRow{margin:5px 10px 0!important}
+.garageHoverCard{margin:7px 10px 10px!important;padding:8px!important}
+.garageHoverHint{display:none!important}
+.garageActions{gap:5px!important;margin-top:6px!important}
+.garageActions .btn{padding:6px 7px!important;font-size:10px!important}
+.garageBay::before{display:none!important}
+/* Newer garage command cards */
+#garage .garageBoard{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:10px!important}
+#garage .garageUnit{min-height:0!important;height:auto!important;border-radius:14px!important;overflow:hidden!important}
+#garage .garageUnitHead{padding:8px 10px 5px!important}
+#garage .garageUnitPhoto{height:118px!important}
+#garage .garageUnitBody{padding:9px 10px 10px!important}
+#garage .garageUnitTitle{font-size:15px!important;line-height:1.2!important}
+#garage .garageUnitMeta{font-size:10px!important;margin-top:3px!important}
+#garage .garageBars{margin-top:6px!important}
+#garage .garageProfit{margin-top:6px!important;gap:5px!important}
+#garage .garageMetric{padding:6px!important}
+#garage .garageMetric span{font-size:9px!important}
+#garage .garageMetric b{font-size:11px!important}
+#garage .garageAi{margin-top:6px!important;padding:7px!important;font-size:10px!important;line-height:1.35!important}
+#garage .garageActionsV9{gap:5px!important;margin-top:7px!important}
+#garage .garageActionsV9 .btn{padding:6px 7px!important;font-size:10px!important}
+@media(max-width:900px){
+ .garageFloor,#garage .garageBoard{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+@media(max-width:560px){
+ .garageFloor,#garage .garageBoard{grid-template-columns:1fr!important}
+ .garageCarVisual{height:124px!important;min-height:124px!important}
+ #garage .garageUnitPhoto{height:125px!important}
+}
+</style>`;
+      source=source.includes('</head>')?source.replace('</head>',compactGarageCSS+'</head>'):compactGarageCSS+source;
+    }
+    // 6) Keep wash button state synchronized across all garage renderers (legacy + V9).
+    const washUiFix=`<script>
+(function(){
+  'use strict';
+  if(window.__PEREKUP_WASH_UI_FIX_V1)return;
+  window.__PEREKUP_WASH_UI_FIX_V1=true;
+  function syncWashButtons(){
+    try{
+      const gs=Array.isArray(state?.garage)?state.garage:[];
+      document.querySelectorAll('[data-wash]').forEach(btn=>{
+        const i=Number(btn.dataset.wash);
+        const g=gs[i];
+        if(!g)return;
+        const clean=Number(g.dirt||0)<=0;
+        const label=clean?'✅ Чисто':'🧼 Мойка';
+        btn.disabled=clean || btn.disabled===true && !clean && false;
+        btn.textContent=label;
+        btn.title=clean?'Автомобиль уже чистый':'Помыть автомобиль';
+      });
+    }catch(_){ }
+  }
+  function boot(){
+    syncWashButtons();
+    const box=document.getElementById('garageCards');
+    if(box){
+      const obs=new MutationObserver(()=>syncWashButtons());
+      obs.observe(box,{childList:true,subtree:true,characterData:true});
+    }
+    setInterval(syncWashButtons,250);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});
+  else setTimeout(boot,0);
+})();
+<\/script>`;
+    source=source.includes('</body>')?source.replace('</body>',washUiFix+'</body>'):source+washUiFix;
+    return source;
+  }
+
+  try{
+    status.textContent='Загрузка игры…';
+    const wrapperRes=await fetch(WRAPPER_URL,{cache:'no-store'});
+    if(!wrapperRes.ok)throw new Error('Не удалось загрузить оболочку: HTTP '+wrapperRes.status);
+    let wrapper=await wrapperRes.text();
+    wrapper=patchWrapper(wrapper);
+
+    // Перехватываем только запрос основного движка 777 и меняем исключительно рендер таймера доставки.
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=async function(input,init){
+      const url=typeof input==='string'?input:(input&&input.url)||'';
+      const response=await originalFetch(input,init);
+      if(url===SOURCE_URL){
+        const text=await response.text();
+        const fixed=patchSource(text);
+        return new Response(fixed,{status:response.status,statusText:response.statusText,headers:response.headers});
+      }
+      return response;
+    };
+
+    status.textContent='Запуск игры с исправленным рендером доставки…';
+    document.open();
+    document.write(wrapper);
+    document.close();
+  }catch(err){
+    status.textContent='Ошибка: '+err.message;
+    console.error(err);
+  }
+})();
+</script>
+</body>
+</html>
